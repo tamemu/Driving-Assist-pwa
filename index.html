@@ -95,6 +95,19 @@
 
       <div class="panel">
         <div class="row">
+          <label for="qualitySelect">画質</label>
+          <span class="value" id="qualityState">標準</span>
+        </div>
+        <select id="qualitySelect">
+          <option value="640x360">軽量 640×360</option>
+          <option value="1280x720" selected>標準 1280×720</option>
+          <option value="1920x1080">高画質 1920×1080</option>
+        </select>
+        <div class="mini-note">高画質にすると映像はきれいになりますが、処理が重くなる場合があります。変更するとカメラを自動で再起動します。</div>
+      </div>
+
+      <div class="panel">
+        <div class="row">
           <label for="modelPath">YOLOモデルURL / パス</label>
           <span class="value" id="modelSourceLabel">ローカル優先</span>
         </div>
@@ -141,7 +154,7 @@
   </div>
 
   <div class="card tips">
-    <p>使い方: HTTPS で開き、使用カメラを選んで「開始」を押してください。USBカメラを接続した場合は「カメラ一覧を更新」を押してください。</p>
+    <p>使い方: HTTPS で開き、使用カメラと画質を選んで「開始」を押してください。USBカメラを接続した場合は「カメラ一覧を更新」を押してください。</p>
     <p>注意: 実運転の安全判断には使わず、必ず目視優先で使ってください。</p>
   </div>
 </div>
@@ -164,6 +177,8 @@
   const refreshCamerasBtn = document.getElementById('refreshCamerasBtn');
   const cameraSelect = document.getElementById('cameraSelect');
   const cameraStateEl = document.getElementById('cameraState');
+  const qualitySelect = document.getElementById('qualitySelect');
+  const qualityStateEl = document.getElementById('qualityState');
   const modelPathInput = document.getElementById('modelPath');
 
   const confRange = document.getElementById('confRange');
@@ -233,11 +248,16 @@
     statusBadge.className = 'status-badge ' + (kind === 'danger' ? 'status-danger' : kind === 'warn' ? 'status-warn' : 'status-ok');
   }
   function setFail(msg) { failReasonEl.textContent = msg || '-'; }
+  function updateQualityState(actualWidth=null, actualHeight=null) {
+    const label = qualitySelect.options[qualitySelect.selectedIndex]?.textContent || '標準 1280×720';
+    qualityStateEl.textContent = actualWidth && actualHeight ? `${actualWidth}×${actualHeight}` : label.replace(/^軽量 |^標準 |^高画質 /, '');
+  }
 
   function saveSettings() {
     const data = {
       modelPath: modelPathInput.value,
       cameraValue: cameraSelect.value,
+      quality: qualitySelect.value,
       conf: confRange.value,
       iou: iouRange.value,
       infer: inferRange.value,
@@ -251,15 +271,17 @@
   function loadSettings() {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY) || localStorage.getItem('drivingAssistPwaSettingsV1');
-      if (!raw) { settingsStateEl.textContent = '初期値'; return; }
+      if (!raw) { updateQualityState(); settingsStateEl.textContent = '初期値'; return; }
       const s = JSON.parse(raw);
       if (s.modelPath != null) modelPathInput.value = s.modelPath;
       if (s.cameraValue != null) state.selectedCameraValue = s.cameraValue;
+      if (s.quality != null) qualitySelect.value = s.quality;
       if (s.conf != null) confRange.value = s.conf;
       if (s.iou != null) iouRange.value = s.iou;
       if (s.infer != null) inferRange.value = s.infer;
       if (s.near != null) nearRange.value = s.near;
       if (s.move != null) moveRange.value = s.move;
+      updateQualityState();
       confVal.textContent = confRange.value;
       iouVal.textContent = iouRange.value;
       inferVal.textContent = inferRange.value + ' ms';
@@ -274,11 +296,13 @@
     modelPathInput.value = './models/yolov8n.onnx';
     cameraSelect.value = 'auto-environment';
     state.selectedCameraValue = 'auto-environment';
+    qualitySelect.value = '1280x720';
     confRange.value = '0.45';
     iouRange.value = '0.45';
     inferRange.value = '700';
     nearRange.value = '0.28';
     moveRange.value = '0.12';
+    updateQualityState();
     confVal.textContent = confRange.value;
     iouVal.textContent = iouRange.value;
     inferVal.textContent = inferRange.value + ' ms';
@@ -335,7 +359,9 @@
 
   function buildVideoConstraint() {
     const selected = cameraSelect.value || 'auto-environment';
-    const base = { width:{ ideal:1280 }, height:{ ideal:720 } };
+    const [w, h] = (qualitySelect.value || '1280x720').split('x').map(v => parseInt(v, 10));
+    const base = { width:{ ideal:w }, height:{ ideal:h } };
+    updateQualityState();
     if (selected.startsWith('device:')) {
       return { ...base, deviceId:{ exact:selected.replace('device:', '') } };
     }
@@ -605,6 +631,7 @@
       video.srcObject = stream;
       state.stream = stream;
       await video.play();
+      updateQualityState(video.videoWidth, video.videoHeight);
       cameraStateEl.textContent = '使用中';
       await refreshCameraList({ requestPermission:false });
       return true;
@@ -647,11 +674,16 @@
     installBtn.style.display = 'none';
   });
 
-  [modelPathInput, cameraSelect, confRange, iouRange, inferRange, nearRange, moveRange].forEach(el => {
+  [modelPathInput, cameraSelect, qualitySelect, confRange, iouRange, inferRange, nearRange, moveRange].forEach(el => {
     el.addEventListener('change', saveSettings);
     el.addEventListener('input', saveSettings);
   });
   cameraSelect.addEventListener('change', () => { state.selectedCameraValue = cameraSelect.value; });
+  qualitySelect.addEventListener('change', async () => {
+    updateQualityState();
+    saveSettings();
+    if (state.stream) await startCamera();
+  });
   refreshCamerasBtn.addEventListener('click', async () => { await refreshCameraList({ requestPermission:true }); saveSettings(); });
   prefetchBtn.addEventListener('click', prefetchAssets);
   fullscreenBtn.addEventListener('click', toggleFullscreen);
@@ -684,6 +716,7 @@
 
   loadSettings();
   cameraSelect.value = state.selectedCameraValue || 'auto-environment';
+  updateQualityState();
   updateOnlineState();
   updatePwaState();
   registerServiceWorker();
