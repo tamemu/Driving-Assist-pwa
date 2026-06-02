@@ -37,6 +37,9 @@
     .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
     .tips { padding:0 12px 12px; color:var(--muted); line-height:1.55; font-size:.9rem; }
     .mini-note { margin-top:8px; color:var(--muted); font-size:.84rem; line-height:1.45; }
+    details { margin-top:4px; }
+    summary { cursor:pointer; font-weight:700; color:var(--accent); padding:6px 0; }
+    .memo-list { margin:8px 0 0; padding-left:1.2em; color:var(--muted); font-size:.88rem; line-height:1.55; }
   </style>
 
   <link rel="manifest" href="manifest.json">
@@ -99,11 +102,26 @@
           <span class="value" id="qualityState">標準</span>
         </div>
         <select id="qualitySelect">
+          <option value="320x180">最軽量 320×180</option>
           <option value="640x360">軽量 640×360</option>
           <option value="1280x720" selected>標準 1280×720</option>
           <option value="1920x1080">高画質 1920×1080</option>
         </select>
-        <div class="mini-note">高画質にすると映像はきれいになりますが、処理が重くなる場合があります。変更するとカメラを自動で再起動します。</div>
+        <div class="mini-note">動きが重い場合は「最軽量」→「推論間隔を長く」→「検出信頼度を少し下げる」の順で調整してください。</div>
+      </div>
+
+      <div class="panel">
+        <details>
+          <summary>調整メモを開く</summary>
+          <ul class="memo-list">
+            <li><b>重くてカクつく:</b> 画質を「最軽量 320×180」にして、推論間隔を 900〜1500ms に上げます。</li>
+            <li><b>前の車を見つけにくい:</b> 検出信頼度を 0.45 から 0.35〜0.40 へ少し下げます。下げすぎると誤検出が増えます。</li>
+            <li><b>誤検出が多い:</b> 検出信頼度を 0.50〜0.60 に上げます。NMS IoU は基本 0.45 のままで大丈夫です。</li>
+            <li><b>接近警告が鳴りすぎる:</b> 接近警告しきい値を 0.30〜0.40 に上げます。鳴らない場合は 0.20〜0.27 に下げます。</li>
+            <li><b>発進通知が鳴りにくい:</b> 発進通知しきい値を 0.08〜0.10 に下げます。誤通知が多い場合は 0.14〜0.18 に上げます。</li>
+            <li><b>おすすめ開始設定:</b> 画質「軽量 640×360」、検出信頼度 0.45、NMS IoU 0.45、推論間隔 700ms から試してください。</li>
+          </ul>
+        </details>
       </div>
 
       <div class="panel">
@@ -154,7 +172,7 @@
   </div>
 
   <div class="card tips">
-    <p>使い方: HTTPS で開き、使用カメラと画質を選んで「開始」を押してください。USBカメラを接続した場合は「カメラ一覧を更新」を押してください。</p>
+    <p>使い方: HTTPS で開き、使用カメラと画質を選んで「開始」を押してください。重い場合は「調整メモを開く」を確認してください。</p>
     <p>注意: 実運転の安全判断には使わず、必ず目視優先で使ってください。</p>
   </div>
 </div>
@@ -250,7 +268,7 @@
   function setFail(msg) { failReasonEl.textContent = msg || '-'; }
   function updateQualityState(actualWidth=null, actualHeight=null) {
     const label = qualitySelect.options[qualitySelect.selectedIndex]?.textContent || '標準 1280×720';
-    qualityStateEl.textContent = actualWidth && actualHeight ? `${actualWidth}×${actualHeight}` : label.replace(/^軽量 |^標準 |^高画質 /, '');
+    qualityStateEl.textContent = actualWidth && actualHeight ? `${actualWidth}×${actualHeight}` : label.replace(/^最軽量 |^軽量 |^標準 |^高画質 /, '');
   }
 
   function saveSettings() {
