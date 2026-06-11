@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>前走車 発進通知・接近警告 YOLO ONNX版</title>
+  <style>
+    :root { --bg:#0b1020; --panel:#151c31; --text:#f1f5ff; --muted:#a7b3d1; --ok:#2dd4bf; --warn:#f59e0b; --danger:#ef4444; --accent:#60a5fa; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:linear-gradient(180deg,#09101b 0%,#111827 100%); color:var(--text); }
+    .app { width:min(100%,1080px); margin:0 auto; padding:12px; }
+    .card { background:rgba(21,28,49,.95); border:1px solid rgba(255,255,255,.08); border-radius:16px; box-shadow:0 12px 32px rgba(0,0,0,.22); overflow:hidden; margin-bottom:12px; }
+    .header { padding:14px 16px 10px; }
+    h1 { margin:0 0 6px; font-size:1.15rem; }
+    .sub { color:var(--muted); font-size:.92rem; line-height:1.45; }
+    .video-wrap { position:relative; background:#000; aspect-ratio:16/9; width:100%; overflow:hidden; border-radius:14px; }
+    video, canvas.overlay { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+    .status-badge { position:absolute; left:10px; top:10px; z-index:5; padding:8px 10px; border-radius:999px; font-size:.85rem; font-weight:700; background:rgba(0,0,0,.55); backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,.15); }
+    .status-ok { color:#d1fae5; } .status-warn { color:#fde68a; } .status-danger { color:#fecaca; }
+    .grid { display:grid; grid-template-columns:1fr; gap:12px; padding:12px; }
+    @media (min-width:920px){ .grid-2 { grid-template-columns:1.2fr .8fr; } }
+    .controls { padding:12px; display:grid; gap:10px; }
+    .panel { padding:12px; background:rgba(255,255,255,.02); border-radius:14px; border:1px solid rgba(255,255,255,.08); }
+    .row { display:grid; grid-template-columns:1fr auto; gap:12px; align-items:center; }
+    .row label { font-size:.93rem; }
+    .value { color:var(--accent); font-weight:700; font-size:.95rem; min-width:70px; text-align:right; }
+    input[type="range"], input[type="text"], select { width:100%; }
+    select, input[type="text"] { color:var(--text); background:#0f172a; border:1px solid rgba(255,255,255,.14); border-radius:10px; padding:10px; }
+    .buttons { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+    button { appearance:none; border:none; border-radius:12px; padding:12px 14px; font-size:.96rem; font-weight:700; color:white; background:linear-gradient(180deg,#2563eb,#1d4ed8); cursor:pointer; }
+    button.secondary { background:linear-gradient(180deg,#334155,#1f2937); }
+    button.warn { background:linear-gradient(180deg,#f59e0b,#d97706); }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    .kv { display:grid; grid-template-columns:1fr auto; gap:10px; padding:6px 0; border-bottom:1px dashed rgba(255,255,255,.08); font-size:.93rem; }
+    .kv:last-child { border-bottom:none; }
+    .kv .k { color:var(--muted); } .kv .v { font-weight:700; text-align:right; }
+    .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
+    .tips { padding:0 12px 12px; color:var(--muted); line-height:1.55; font-size:.9rem; }
+    .mini-note { margin-top:8px; color:var(--muted); font-size:.84rem; line-height:1.45; }
+    details { margin-top:4px; }
+    summary { cursor:pointer; font-weight:700; color:var(--accent); padding:6px 0; }
+    .memo-list { margin:8px 0 0; padding-left:1.2em; color:var(--muted); font-size:.88rem; line-height:1.55; }
+  </style>
+
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="運転支援">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="icon-192.png">
+</head>
+<body>
+<div class="app">
+  <div class="card header">
+    <h1>前走車 発進通知・接近警告 WEBアプリ（YOLO ONNX版）</h1>
+    <div class="sub">
+      Transformers.js は使わず、ONNX Runtime Web で YOLOv8n を直接読み込みます。<br>
+      前方中央の車・トラック・バス・バイクを優先追跡し、近すぎると警告音、停止中に前車が動くと通知音を鳴らします。
+    </div>
+  </div>
+
+  <div class="card grid grid-2">
+    <div style="padding:12px">
+      <div class="video-wrap">
+        <video id="video" playsinline muted autoplay></video>
+        <canvas id="overlay" class="overlay"></canvas>
+        <div id="statusBadge" class="status-badge status-ok">待機中</div>
+      </div>
+    </div>
+    <div class="controls">
+      <div class="panel">
+        <div class="buttons">
+          <button id="startBtn">開始</button>
+          <button id="stopBtn" class="secondary" disabled>停止</button>
+          <button id="warnTestBtn" class="warn">警告音テスト</button>
+          <button id="moveTestBtn" class="secondary">発進通知テスト</button>
+          <button id="prefetchBtn" class="secondary">モデル事前取得</button>
+          <button id="fullscreenBtn" class="secondary">全画面</button>
+          <button id="installBtn" class="secondary" style="display:none;">ホーム画面に追加</button>
+          <button id="resetSettingsBtn" class="secondary">設定リセット</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="row">
+          <label for="cameraSelect">使用カメラ</label>
+          <span class="value" id="cameraState">未確認</span>
+        </div>
+        <select id="cameraSelect">
+          <option value="auto-environment">アウトカメラ優先</option>
+          <option value="auto-user">インカメラ優先</option>
+        </select>
+        <div class="buttons" style="margin-top:10px; grid-template-columns:1fr;">
+          <button id="refreshCamerasBtn" class="secondary">カメラ一覧を更新</button>
+        </div>
+        <div class="mini-note">初回はカメラ許可後に名称が表示されます。USBカメラを接続した後は「カメラ一覧を更新」を押してください。</div>
+      </div>
+
+      <div class="panel">
+        <div class="row">
+          <label for="qualitySelect">画質</label>
+          <span class="value" id="qualityState">標準</span>
+        </div>
+        <select id="qualitySelect">
+          <option value="320x180">最軽量 320×180</option>
+          <option value="640x360">軽量 640×360</option>
+          <option value="1280x720" selected>標準 1280×720</option>
+          <option value="1920x1080">高画質 1920×1080</option>
+        </select>
+        <div class="mini-note">動きが重い場合は「最軽量」→「推論間隔を長く」→「検出信頼度を少し下げる」の順で調整してください。</div>
+        <div class="row" style="margin-top:10px;">
+          <label for="roiCheck">中央ズーム推論（前車検出を強化）</label>
+          <input type="checkbox" id="roiCheck" checked style="width:auto; transform:scale(1.35); justify-self:end;" />
+        </div>
+        <div class="mini-note">画面中央を切り出して拡大推論します。前走車がモデルに大きく映り、検出率が上がります。画面端の車を検出したい場合はオフにしてください。</div>
+      </div>
+
+      <div class="panel">
+        <details>
+          <summary>調整メモを開く</summary>
+          <ul class="memo-list">
+            <li><b>重くてカクつく:</b> 画質を「最軽量 320×180」にして、推論間隔を 900〜1500ms に上げます。</li>
+            <li><b>前の車を見つけにくい:</b> 「中央ズーム推論」をオンのまま、検出信頼度を 0.35 から 0.25〜0.30 へ少し下げます。下げすぎると誤検出が増えます。</li>
+            <li><b>誤検出が多い:</b> 検出信頼度を 0.45〜0.60 に上げます。NMS IoU は基本 0.45 のままで大丈夫です。</li>
+            <li><b>接近警告が鳴りすぎる:</b> 接近警告しきい値を 0.30〜0.40 に上げます。鳴らない場合は 0.20〜0.27 に下げます。</li>
+            <li><b>発進通知が鳴りにくい:</b> 発進通知しきい値を 0.08〜0.10 に下げます。誤通知が多い場合は 0.14〜0.18 に上げます。</li>
+            <li><b>おすすめ開始設定:</b> 画質「標準 1280×720」、中央ズーム推論オン、検出信頼度 0.35、NMS IoU 0.45、推論間隔 700ms（backend が webgpu なら 400ms）から試してください。</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="panel">
+        <div class="row">
+          <label for="modelPath">YOLOモデルURL / パス</label>
+          <span class="value" id="modelSourceLabel">ローカル優先</span>
+        </div>
+        <input id="modelPath" type="text" value="./models/yolov8n.onnx" />
+      </div>
+
+      <div class="panel">
+        <div class="kv"><div class="k">通信状態</div><div class="v" id="networkState">確認中</div></div>
+        <div class="kv"><div class="k">PWA状態</div><div class="v" id="pwaState">通常ブラウザ</div></div>
+        <div class="kv"><div class="k">事前取得</div><div class="v" id="prefetchState">未実行</div></div>
+        <div id="offlineNotice" style="display:none; margin-top:10px; padding:10px 12px; border-radius:12px; background:rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.35); color:#fde68a; font-size:.92rem;">
+          オフラインです。初回アクセス前にモデルやライブラリを取得していない場合は開始できません。
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="row"><label for="confRange">検出信頼度</label><span class="value" id="confVal">0.35</span></div>
+        <input id="confRange" type="range" min="0.15" max="0.90" step="0.01" value="0.35" />
+        <div class="row"><label for="iouRange">NMS IoU</label><span class="value" id="iouVal">0.45</span></div>
+        <input id="iouRange" type="range" min="0.20" max="0.80" step="0.01" value="0.45" />
+        <div class="row"><label for="inferRange">推論間隔</label><span class="value" id="inferVal">700 ms</span></div>
+        <input id="inferRange" type="range" min="250" max="1500" step="50" value="700" />
+      </div>
+
+      <div class="panel">
+        <div class="row"><label for="nearRange">接近警告しきい値</label><span class="value" id="nearVal">0.28</span></div>
+        <input id="nearRange" type="range" min="0.10" max="0.55" step="0.01" value="0.28" />
+        <div class="row"><label for="moveRange">発進通知しきい値</label><span class="value" id="moveVal">0.12</span></div>
+        <input id="moveRange" type="range" min="0.03" max="0.35" step="0.01" value="0.12" />
+      </div>
+
+      <div class="panel">
+        <div class="kv"><div class="k">モデル状態</div><div class="v" id="modelState">未読込</div></div>
+        <div class="kv"><div class="k">使用モデル</div><div class="v mono" id="usedModel">-</div></div>
+        <div class="kv"><div class="k">推論 backend</div><div class="v" id="backend">-</div></div>
+        <div class="kv"><div class="k">推論時間</div><div class="v" id="inferTime">-</div></div>
+        <div class="kv"><div class="k">画面スリープ防止</div><div class="v" id="wakeState">-</div></div>
+        <div class="kv"><div class="k">前車ラベル</div><div class="v" id="leadLabel">-</div></div>
+        <div class="kv"><div class="k">近さ指標</div><div class="v" id="nearMetric">-</div></div>
+        <div class="kv"><div class="k">発進指標</div><div class="v" id="moveMetric">-</div></div>
+        <div class="kv"><div class="k">失敗理由</div><div class="v mono" id="failReason">-</div></div>
+        <div class="kv"><div class="k">Service Worker</div><div class="v" id="swState">未登録</div></div>
+        <div class="kv"><div class="k">保存設定</div><div class="v" id="settingsState">未保存</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card tips">
+    <p>使い方: HTTPS で開き、使用カメラと画質を選んで「開始」を押してください。重い場合は「調整メモを開く」を確認してください。</p>
+    <p>注意: 実運転の安全判断には使わず、必ず目視優先で使ってください。</p>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
+<script>
+(() => {
+  const video = document.getElementById('video');
+  const overlay = document.getElementById('overlay');
+  const ctx = overlay.getContext('2d');
+  const statusBadge = document.getElementById('statusBadge');
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const warnTestBtn = document.getElementById('warnTestBtn');
+  const moveTestBtn = document.getElementById('moveTestBtn');
+  const prefetchBtn = document.getElementById('prefetchBtn');
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
+  const installBtn = document.getElementById('installBtn');
+  const resetSettingsBtn = document.getElementById('resetSettingsBtn');
+  const refreshCamerasBtn = document.getElementById('refreshCamerasBtn');
+  const cameraSelect = document.getElementById('cameraSelect');
+  const cameraStateEl = document.getElementById('cameraState');
+  const qualitySelect = document.getElementById('qualitySelect');
+  const qualityStateEl = document.getElementById('qualityState');
+  const modelPathInput = document.getElementById('modelPath');
+  const roiCheck = document.getElementById('roiCheck');
+  const inferTimeEl = document.getElementById('inferTime');
+  const wakeStateEl = document.getElementById('wakeState');
+
+  const confRange = document.getElementById('confRange');
+  const iouRange = document.getElementById('iouRange');
+  const inferRange = document.getElementById('inferRange');
+  const nearRange = document.getElementById('nearRange');
+  const moveRange = document.getElementById('moveRange');
+
+  const confVal = document.getElementById('confVal');
+  const iouVal = document.getElementById('iouVal');
+  const inferVal = document.getElementById('inferVal');
+  const nearVal = document.getElementById('nearVal');
+  const moveVal = document.getElementById('moveVal');
+
+  const modelState = document.getElementById('modelState');
+  const usedModel = document.getElementById('usedModel');
+  const backendEl = document.getElementById('backend');
+  const leadLabelEl = document.getElementById('leadLabel');
+  const nearMetricEl = document.getElementById('nearMetric');
+  const moveMetricEl = document.getElementById('moveMetric');
+  const failReasonEl = document.getElementById('failReason');
+  const modelSourceLabel = document.getElementById('modelSourceLabel');
+  const networkStateEl = document.getElementById('networkState');
+  const pwaStateEl = document.getElementById('pwaState');
+  const prefetchStateEl = document.getElementById('prefetchState');
+  const offlineNoticeEl = document.getElementById('offlineNotice');
+  const swStateEl = document.getElementById('swState');
+  const settingsStateEl = document.getElementById('settingsState');
+
+  const labels = [
+    "person","bicycle","car","motorcycle","airplane","bus","train","truck","boat","traffic light",
+    "fire hydrant","stop sign","parking meter","bench","bird","cat","dog","horse","sheep","cow",
+    "elephant","bear","zebra","giraffe","backpack","umbrella","handbag","tie","suitcase","frisbee",
+    "skis","snowboard","sports ball","kite","baseball bat","baseball glove","skateboard","surfboard",
+    "tennis racket","bottle","wine glass","cup","fork","knife","spoon","bowl","banana","apple",
+    "sandwich","orange","broccoli","carrot","hot dog","pizza","donut","cake","chair","couch",
+    "potted plant","bed","dining table","toilet","tv","laptop","mouse","remote","keyboard","cell phone",
+    "microwave","oven","toaster","sink","refrigerator","book","clock","vase","scissors","teddy bear","hair drier","toothbrush"
+  ];
+  const vehicleClasses = new Set(["car","motorcycle","bus","truck"]);
+  const inputSize = 640;
+  const state = {
+    stream:null, running:false, session:null, inferTimer:null, selectedCameraValue:'auto-environment',
+    leadBox:null, lastLeadBox:null, stationaryFrames:0, lastWarnTs:0, lastMoveTs:0,
+    leadMiss:0, lastLeadTs:0, wakeLock:null,
+    off:document.createElement('canvas'), offCtx:null
+  };
+  state.off.width = inputSize;
+  state.off.height = inputSize;
+  state.offCtx = state.off.getContext('2d', { willReadFrequently:true });
+
+  const ORT_CDN_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
+  const SETTINGS_KEY = 'drivingAssistPwaSettingsV3';
+  const LEAD_COAST_MAX = 3; // 前車ロスト時に保持する推論回数
+  let deferredPrompt = null;
+
+  function bindRange(input, out, suffix='') {
+    const update = () => out.textContent = input.value + suffix;
+    input.addEventListener('input', update);
+    update();
+  }
+  bindRange(confRange, confVal);
+  bindRange(iouRange, iouVal);
+  bindRange(inferRange, inferVal, ' ms');
+  bindRange(nearRange, nearVal);
+  bindRange(moveRange, moveVal);
+
+  function setStatus(text, kind='ok') {
+    statusBadge.textContent = text;
+    statusBadge.className = 'status-badge ' + (kind === 'danger' ? 'status-danger' : kind === 'warn' ? 'status-warn' : 'status-ok');
+  }
+  function setFail(msg) { failReasonEl.textContent = msg || '-'; }
+  function updateQualityState(actualWidth=null, actualHeight=null) {
+    const label = qualitySelect.options[qualitySelect.selectedIndex]?.textContent || '標準 1280×720';
+    qualityStateEl.textContent = actualWidth && actualHeight ? `${actualWidth}×${actualHeight}` : label.replace(/^最軽量 |^軽量 |^標準 |^高画質 /, '');
+  }
+
+  function saveSettings() {
+    const data = {
+      modelPath: modelPathInput.value,
+      cameraValue: cameraSelect.value,
+      quality: qualitySelect.value,
+      conf: confRange.value,
+      iou: iouRange.value,
+      infer: inferRange.value,
+      near: nearRange.value,
+      move: moveRange.value,
+      roi: roiCheck.checked
+    };
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(data));
+    settingsStateEl.textContent = '保存済み';
+  }
+
+  function loadSettings() {
+    try {
+      const rawV3 = localStorage.getItem(SETTINGS_KEY);
+      const rawLegacy = localStorage.getItem('drivingAssistPwaSettingsV2') || localStorage.getItem('drivingAssistPwaSettingsV1');
+      const raw = rawV3 || rawLegacy;
+      if (!raw) { updateQualityState(); settingsStateEl.textContent = '初期値'; return; }
+      const s = JSON.parse(raw);
+      if (s.modelPath != null) modelPathInput.value = s.modelPath;
+      if (s.cameraValue != null) state.selectedCameraValue = s.cameraValue;
+      if (s.quality != null) qualitySelect.value = s.quality;
+      if (rawV3 && s.conf != null) confRange.value = s.conf; // 旧設定の高い信頼度(0.45)は引き継がず新既定0.35を使う
+      if (s.iou != null) iouRange.value = s.iou;
+      if (s.infer != null) inferRange.value = s.infer;
+      if (s.near != null) nearRange.value = s.near;
+      if (s.move != null) moveRange.value = s.move;
+      if (s.roi != null) roiCheck.checked = !!s.roi;
+      updateQualityState();
+      confVal.textContent = confRange.value;
+      iouVal.textContent = iouRange.value;
+      inferVal.textContent = inferRange.value + ' ms';
+      nearVal.textContent = nearRange.value;
+      moveVal.textContent = moveRange.value;
+      settingsStateEl.textContent = rawV3 ? '読込済み' : '旧設定から移行';
+    } catch (e) { settingsStateEl.textContent = '読込失敗'; }
+  }
+
+  function resetSettings() {
+    localStorage.removeItem(SETTINGS_KEY);
+    modelPathInput.value = './models/yolov8n.onnx';
+    cameraSelect.value = 'auto-environment';
+    state.selectedCameraValue = 'auto-environment';
+    qualitySelect.value = '1280x720';
+    confRange.value = '0.35';
+    iouRange.value = '0.45';
+    inferRange.value = '700';
+    nearRange.value = '0.28';
+    moveRange.value = '0.12';
+    roiCheck.checked = true;
+    updateQualityState();
+    confVal.textContent = confRange.value;
+    iouVal.textContent = iouRange.value;
+    inferVal.textContent = inferRange.value + ' ms';
+    nearVal.textContent = nearRange.value;
+    moveVal.textContent = moveRange.value;
+    settingsStateEl.textContent = 'リセット済み';
+  }
+
+  function baseCameraOptionsHtml() {
+    return '<option value="auto-environment">アウトカメラ優先</option><option value="auto-user">インカメラ優先</option>';
+  }
+
+  function readableCameraLabel(device, index) {
+    const raw = device.label || `カメラ ${index + 1}`;
+    const l = raw.toLowerCase();
+    if (/usb|external|webcam|capture|uvc/.test(l)) return `USB/外付けカメラ - ${raw}`;
+    if (/back|rear|environment|アウト|背面|外側/.test(l)) return `アウトカメラ - ${raw}`;
+    if (/front|user|face|facetime|イン|前面|内側/.test(l)) return `インカメラ - ${raw}`;
+    return raw;
+  }
+
+  async function refreshCameraList({ requestPermission=false } = {}) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+      cameraStateEl.textContent = '非対応';
+      return;
+    }
+    cameraStateEl.textContent = '確認中';
+    let tempStream = null;
+    try {
+      if (requestPermission) {
+        tempStream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+      }
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d => d.kind === 'videoinput');
+      const keep = state.selectedCameraValue || cameraSelect.value || 'auto-environment';
+      cameraSelect.innerHTML = baseCameraOptionsHtml();
+      cams.forEach((device, index) => {
+        const opt = document.createElement('option');
+        opt.value = `device:${device.deviceId}`;
+        opt.textContent = readableCameraLabel(device, index);
+        cameraSelect.appendChild(opt);
+      });
+      if ([...cameraSelect.options].some(o => o.value === keep)) cameraSelect.value = keep;
+      else cameraSelect.value = 'auto-environment';
+      state.selectedCameraValue = cameraSelect.value;
+      cameraStateEl.textContent = cams.length ? `${cams.length}台` : '未検出';
+    } catch (e) {
+      cameraStateEl.textContent = '失敗';
+      setFail('カメラ一覧取得失敗: ' + (e?.message || String(e)));
+    } finally {
+      if (tempStream) tempStream.getTracks().forEach(t => t.stop());
+    }
+  }
+
+  function buildVideoConstraint() {
+    const selected = cameraSelect.value || 'auto-environment';
+    const [w, h] = (qualitySelect.value || '1280x720').split('x').map(v => parseInt(v, 10));
+    const base = { width:{ ideal:w }, height:{ ideal:h } };
+    updateQualityState();
+    if (selected.startsWith('device:')) {
+      return { ...base, deviceId:{ exact:selected.replace('device:', '') } };
+    }
+    if (selected === 'auto-user') return { ...base, facingMode:{ ideal:'user' } };
+    return { ...base, facingMode:{ ideal:'environment' } };
+  }
+
+  function updateOnlineState() {
+    const online = navigator.onLine;
+    networkStateEl.textContent = online ? 'オンライン' : 'オフライン';
+    offlineNoticeEl.style.display = online ? 'none' : 'block';
+  }
+  function updatePwaState() {
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    pwaStateEl.textContent = standalone ? 'インストール済み' : '通常ブラウザ';
+  }
+
+  async function prefetchAssets() {
+    prefetchStateEl.textContent = '取得中';
+    const targets = [
+      './','./index.html','./manifest.json','./sw.js','./icon-192.png','./icon-512.png',
+      './models/yolov8n.onnx',
+      ORT_CDN_BASE + 'ort.min.js',
+      ORT_CDN_BASE + 'ort-wasm-simd-threaded.wasm',
+      ORT_CDN_BASE + 'ort-wasm-simd-threaded.mjs',
+      ORT_CDN_BASE + 'ort-wasm-simd-threaded.jsep.wasm',
+      ORT_CDN_BASE + 'ort-wasm-simd-threaded.jsep.mjs'
+    ];
+    try {
+      if ('caches' in window) {
+        const cache = await caches.open('livecamera-map-manual-prefetch-v1');
+        for (const url of targets) { try { await cache.add(url); } catch (e) {} }
+      } else {
+        for (const url of targets) { try { await fetch(url, { cache:'reload', mode:'no-cors' }); } catch (e) {} }
+      }
+      prefetchStateEl.textContent = '取得済み';
+    } catch (e) {
+      prefetchStateEl.textContent = '失敗';
+      setFail('事前取得失敗: ' + (e?.message || String(e)));
+    }
+  }
+
+  async function toggleFullscreen() {
+    try {
+      if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
+      else await document.exitFullscreen();
+    } catch (e) { setFail('全画面切替失敗: ' + (e?.message || String(e))); }
+  }
+
+  async function registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) { swStateEl.textContent = '非対応'; return; }
+    try { await navigator.serviceWorker.register('./sw.js'); swStateEl.textContent = '登録済み'; }
+    catch (e) { swStateEl.textContent = '失敗'; setFail('Service Worker登録失敗: ' + (e?.message || String(e))); }
+  }
+
+  let audioCtx = null;
+  function ensureAudio() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (e) {}
+    return audioCtx;
+  }
+  function tone(freq=880, duration=180, type='sine') {
+    try {
+      const ac = ensureAudio();
+      if (!ac) return;
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.type = type; osc.frequency.value = freq; gain.gain.value = 0.0001;
+      osc.connect(gain); gain.connect(ac.destination);
+      const now = ac.currentTime;
+      gain.gain.exponentialRampToValueAtTime(0.08, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration / 1000);
+      osc.start(now); osc.stop(now + duration / 1000 + 0.02);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
+    } catch (e) {}
+  }
+  function warnBeep(){ tone(880, 220, 'square'); setTimeout(() => tone(660, 180, 'square'), 120); }
+  function moveBeep(){ tone(1040, 120, 'sine'); setTimeout(() => tone(1320, 160, 'sine'), 130); }
+
+  async function requestWakeLock() {
+    if (!('wakeLock' in navigator)) { wakeStateEl.textContent = '非対応'; return; }
+    try {
+      state.wakeLock = await navigator.wakeLock.request('screen');
+      wakeStateEl.textContent = '有効';
+      state.wakeLock.addEventListener('release', () => { wakeStateEl.textContent = '解除'; });
+    } catch (e) { wakeStateEl.textContent = '失敗'; }
+  }
+  function releaseWakeLock() {
+    if (state.wakeLock) { state.wakeLock.release().catch(() => {}); state.wakeLock = null; }
+    wakeStateEl.textContent = '-';
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && state.running) requestWakeLock();
+  });
+
+  async function fetchExists(url) {
+    try { const res = await fetch(url, { method:'HEAD', cache:'no-store' }); return res.ok; }
+    catch { return false; }
+  }
+
+  async function loadModel() {
+    modelState.textContent = '読込中'; setFail(''); usedModel.textContent = '-';
+    const local = './models/yolov8n.onnx';
+    const entered = modelPathInput.value.trim();
+    let chosen = entered || local;
+    if (await fetchExists(local)) { chosen = local; modelSourceLabel.textContent = 'ローカル'; }
+    else { modelSourceLabel.textContent = '入力欄'; }
+    ort.env.wasm.numThreads = 1;
+    ort.env.wasm.simd = true;
+    ort.env.wasm.wasmPaths = ORT_CDN_BASE;
+    let modelBuf;
+    try {
+      const res = await fetch(chosen);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      modelBuf = new Uint8Array(await res.arrayBuffer());
+    } catch (e) {
+      modelState.textContent = '読込失敗';
+      setFail('YOLOモデル取得失敗: ' + (e?.message || String(e)));
+      return false;
+    }
+    // WebGPUが使えれば数倍速くなるので優先し、ダメならWASMへフォールバック
+    const providerTries = [];
+    if (navigator.gpu) providerTries.push(['webgpu']);
+    providerTries.push(['wasm']);
+    let lastErr = null;
+    for (const providers of providerTries) {
+      try {
+        const sess = await ort.InferenceSession.create(modelBuf, { executionProviders:providers, graphOptimizationLevel:'all' });
+        // ウォームアップ(WebGPUのシェーダーコンパイル等を済ませ、実行可否もここで確認)
+        const warm = new ort.Tensor('float32', new Float32Array(3 * inputSize * inputSize), [1,3,inputSize,inputSize]);
+        await sess.run({ [sess.inputNames[0]]: warm });
+        state.session = sess;
+        modelState.textContent = '読込完了';
+        usedModel.textContent = chosen;
+        backendEl.textContent = providers.join(',');
+        return true;
+      } catch (e) { lastErr = e; }
+    }
+    modelState.textContent = '読込失敗';
+    setFail('YOLOモデル読込失敗: ' + (lastErr?.message || String(lastErr)));
+    return false;
+  }
+
+  function letterboxInfo(vw, vh, size=640) {
+    const scale = Math.min(size / vw, size / vh);
+    const nw = Math.round(vw * scale), nh = Math.round(vh * scale);
+    const dx = (size - nw) / 2, dy = (size - nh) / 2;
+    return { scale, nw, nh, dx, dy };
+  }
+
+  function getRoiRect(vw, vh) {
+    // 中央の正方形(高さいっぱい)を切り出す。16:9なら横の中央約56%をカバーし、
+    // リード車の選定領域(中央25%〜75%)を包含する。
+    const side = Math.min(vw, vh);
+    return { sx: Math.round((vw - side) / 2), sy: Math.round((vh - side) / 2), sw: side, sh: side };
+  }
+
+  function prepareInput() {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    let sx = 0, sy = 0, sw = vw, sh = vh;
+    if (roiCheck.checked) ({ sx, sy, sw, sh } = getRoiRect(vw, vh));
+    const { scale, nw, nh, dx, dy } = letterboxInfo(sw, sh, inputSize);
+    state.offCtx.fillStyle = 'black';
+    state.offCtx.fillRect(0, 0, inputSize, inputSize);
+    state.offCtx.drawImage(video, sx, sy, sw, sh, dx, dy, nw, nh);
+    const imageData = state.offCtx.getImageData(0, 0, inputSize, inputSize);
+    const { data } = imageData;
+    const float = new Float32Array(1 * 3 * inputSize * inputSize);
+    const area = inputSize * inputSize;
+    for (let i = 0; i < area; i++) {
+      float[i] = data[i * 4] / 255.0;
+      float[i + area] = data[i * 4 + 1] / 255.0;
+      float[i + area * 2] = data[i * 4 + 2] / 255.0;
+    }
+    return { tensor:new ort.Tensor('float32', float, [1,3,inputSize,inputSize]), meta:{ scale,nw,nh,dx,dy,sx,sy,sw,sh,vw,vh } };
+  }
+
+  function iou(a, b) {
+    const x1 = Math.max(a.x1,b.x1), y1 = Math.max(a.y1,b.y1);
+    const x2 = Math.min(a.x2,b.x2), y2 = Math.min(a.y2,b.y2);
+    const inter = Math.max(0,x2-x1) * Math.max(0,y2-y1);
+    const areaA = Math.max(0,a.x2-a.x1) * Math.max(0,a.y2-a.y1);
+    const areaB = Math.max(0,b.x2-b.x1) * Math.max(0,b.y2-b.y1);
+    return inter / Math.max(1e-6, areaA + areaB - inter);
+  }
+  function nms(boxes, iouThr) {
+    boxes.sort((a,b) => b.score - a.score);
+    const out = [];
+    while (boxes.length) {
+      const cur = boxes.shift();
+      out.push(cur);
+      boxes = boxes.filter(b => iou(cur, b) < iouThr);
+    }
+    return out;
+  }
+
+  function parseOutput(outputTensor, meta) {
+    const confThr = parseFloat(confRange.value);
+    const iouThr = parseFloat(iouRange.value);
+    // 追跡ヒステリシス: 前フレームでリード車を捕捉済みなら、低めの信頼度でも一旦拾う
+    const trackThr = Math.max(0.15, confThr * 0.6);
+    const floorThr = state.lastLeadBox ? trackThr : confThr;
+    const data = outputTensor.data;
+    const dims = outputTensor.dims;
+    let rows, cols, getVal;
+    if (dims.length === 3 && dims[1] === 84) { rows = dims[2]; cols = dims[1]; getVal = (r,c) => data[c * rows + r]; }
+    else if (dims.length === 3 && dims[2] === 84) { rows = dims[1]; cols = dims[2]; getVal = (r,c) => data[r * cols + c]; }
+    else { throw new Error('想定外の出力shape: ' + JSON.stringify(dims)); }
+    const boxes = [];
+    for (let r = 0; r < rows; r++) {
+      let bestClass = -1, bestScore = 0;
+      for (let c = 4; c < 84; c++) {
+        const score = getVal(r, c);
+        if (score > bestScore) { bestScore = score; bestClass = c - 4; }
+      }
+      if (bestScore < floorThr) continue;
+      const label = labels[bestClass] || String(bestClass);
+      if (!vehicleClasses.has(label)) continue;
+      const cx = getVal(r,0), cy = getVal(r,1), w = getVal(r,2), h = getVal(r,3);
+      let x1 = cx - w / 2, y1 = cy - h / 2, x2 = cx + w / 2, y2 = cy + h / 2;
+      // モデル座標 → 切り出し領域座標 → フル映像座標
+      x1 = (x1 - meta.dx) / meta.scale + meta.sx;
+      y1 = (y1 - meta.dy) / meta.scale + meta.sy;
+      x2 = (x2 - meta.dx) / meta.scale + meta.sx;
+      y2 = (y2 - meta.dy) / meta.scale + meta.sy;
+      x1 = Math.max(0, Math.min(meta.vw, x1));
+      y1 = Math.max(0, Math.min(meta.vh, y1));
+      x2 = Math.max(0, Math.min(meta.vw, x2));
+      y2 = Math.max(0, Math.min(meta.vh, y2));
+      if ((x2 - x1) < 10 || (y2 - y1) < 10) continue;
+      boxes.push({ x1,y1,x2,y2,score:bestScore,label });
+    }
+    const kept = nms(boxes, iouThr);
+    // 通常閾値を満たすか、前リード車と十分重なる(=同一車両の継続)もののみ残す
+    return kept.filter(b => b.score >= confThr || (state.lastLeadBox && iou(b, state.lastLeadBox) > 0.3));
+  }
+
+  function pickLeadVehicle(boxes, vw, vh) {
+    const cx = vw / 2, cy = vh * 0.58;
+    const candidates = boxes.map(b => {
+      const bx = (b.x1 + b.x2) / 2, by = (b.y1 + b.y2) / 2;
+      const area = (b.x2 - b.x1) * (b.y2 - b.y1) / (vw * vh);
+      const dist = Math.hypot((bx - cx) / vw, (by - cy) / vh);
+      return { ...b, pickScore: area * 1.8 - dist };
+    }).filter(b => ((b.x1 + b.x2) / 2) > vw * 0.25 && ((b.x1 + b.x2) / 2) < vw * 0.75);
+    if (!candidates.length) return null;
+    // 前フレームのリード車と重なる候補があれば、同一車両として優先(乗り移り防止)
+    if (state.lastLeadBox) {
+      let best = null, bestIou = 0.25;
+      for (const c of candidates) {
+        const v = iou(c, state.lastLeadBox);
+        if (v > bestIou) { bestIou = v; best = c; }
+      }
+      if (best) return best;
+    }
+    candidates.sort((a,b) => b.pickScore - a.pickScore);
+    return candidates[0];
+  }
+
+  function draw(boxes, lead, coastBox) {
+    overlay.width = video.videoWidth;
+    overlay.height = video.videoHeight;
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 2;
+    if (roiCheck.checked) {
+      const r = getRoiRect(overlay.width, overlay.height);
+      ctx.strokeRect(r.sx, r.sy, r.sw, r.sh);
+    } else {
+      ctx.strokeRect(overlay.width*0.25, overlay.height*0.22, overlay.width*0.5, overlay.height*0.56);
+    }
+    for (const b of boxes) {
+      ctx.strokeStyle = (lead === b) ? '#ef4444' : '#60a5fa';
+      ctx.lineWidth = (lead === b) ? 4 : 2;
+      ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(b.x1, Math.max(0, b.y1 - 22), 140, 20);
+      ctx.fillStyle = '#fff';
+      ctx.font = '14px sans-serif';
+      ctx.fillText(`${b.label} ${(b.score*100).toFixed(0)}%`, b.x1 + 6, Math.max(14, b.y1 - 7));
+    }
+    if (coastBox) {
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([8, 6]);
+      ctx.strokeRect(coastBox.x1, coastBox.y1, coastBox.x2 - coastBox.x1, coastBox.y2 - coastBox.y1);
+      ctx.setLineDash([]);
+    }
+  }
+
+  function updateAlerts(lead, vw, vh) {
+    if (!lead) {
+      // 一瞬の検出抜けでは追跡をリセットせず、数回分は前回位置を保持する
+      if (state.lastLeadBox && state.leadMiss < LEAD_COAST_MAX) {
+        state.leadMiss += 1;
+        leadLabelEl.textContent = `保持中 (${state.leadMiss}/${LEAD_COAST_MAX})`;
+        setStatus('前車追跡中(保持)', 'warn');
+        return;
+      }
+      leadLabelEl.textContent = '-';
+      nearMetricEl.textContent = '-';
+      moveMetricEl.textContent = '-';
+      state.lastLeadBox = null;
+      state.lastLeadTs = 0;
+      state.stationaryFrames = 0;
+      state.leadMiss = 0;
+      setStatus('前車未検出', 'warn');
+      return;
+    }
+    state.leadMiss = 0;
+    leadLabelEl.textContent = `${lead.label} ${(lead.score*100).toFixed(0)}%`;
+    const areaRatio = ((lead.x2 - lead.x1) * (lead.y2 - lead.y1)) / (vw * vh);
+    nearMetricEl.textContent = areaRatio.toFixed(3);
+    const prev = state.lastLeadBox;
+    const nowT = performance.now();
+    let movement = 0;
+    if (prev && state.lastLeadTs) {
+      const cx1 = (prev.x1 + prev.x2) / 2, cy1 = (prev.y1 + prev.y2) / 2;
+      const cx2 = (lead.x1 + lead.x2) / 2, cy2 = (lead.y1 + lead.y2) / 2;
+      const dist = Math.hypot(cx2 - cx1, cy2 - cy1);
+      const size = Math.max(1, (lead.x2 - lead.x1 + lead.y2 - lead.y1) / 2);
+      const dt = Math.max(50, nowT - state.lastLeadTs);
+      movement = (dist / size) * (700 / dt); // 700ms基準に時間正規化(推論間隔を変えても閾値の意味が変わらない)
+    }
+    state.lastLeadTs = nowT;
+    moveMetricEl.textContent = movement.toFixed(3);
+    const now = Date.now();
+    if (areaRatio >= parseFloat(nearRange.value)) {
+      setStatus('近接警告', 'danger');
+      if (now - state.lastWarnTs > 1600) { warnBeep(); state.lastWarnTs = now; }
+    } else { setStatus('監視中', 'ok'); }
+    if (movement < 0.04 && areaRatio > 0.05) state.stationaryFrames += 1;
+    else if (movement > parseFloat(moveRange.value)) {
+      if (state.stationaryFrames >= 3 && now - state.lastMoveTs > 2200) {
+        moveBeep(); state.lastMoveTs = now; setStatus('前走車が発進', 'warn');
+      }
+      state.stationaryFrames = 0;
+    } else state.stationaryFrames = Math.max(0, state.stationaryFrames - 1);
+    state.lastLeadBox = { ...lead };
+  }
+
+  async function runInferenceLoop() {
+    if (!state.running || !state.session) return;
+    try {
+      if (video.readyState >= 2) {
+        const { tensor, meta } = prepareInput();
+        const inputName = state.session.inputNames[0];
+        const t0 = performance.now();
+        const outputs = await state.session.run({ [inputName]: tensor });
+        inferTimeEl.textContent = Math.round(performance.now() - t0) + ' ms';
+        const firstName = state.session.outputNames[0];
+        const out = outputs[firstName];
+        const boxes = parseOutput(out, meta);
+        const lead = pickLeadVehicle(boxes, video.videoWidth, video.videoHeight);
+        const coastBox = (!lead && state.lastLeadBox && state.leadMiss < LEAD_COAST_MAX) ? state.lastLeadBox : null;
+        draw(boxes, lead, coastBox);
+        updateAlerts(lead, video.videoWidth, video.videoHeight);
+      }
+    } catch (e) {
+      setFail('推論失敗: ' + (e?.message || String(e)));
+      setStatus('推論エラー', 'danger');
+    } finally {
+      state.inferTimer = setTimeout(runInferenceLoop, parseInt(inferRange.value, 10));
+    }
+  }
+
+  async function startCamera() {
+    try {
+      if (state.stream) state.stream.getTracks().forEach(t => t.stop());
+      const stream = await navigator.mediaDevices.getUserMedia({ video:buildVideoConstraint(), audio:false });
+      video.srcObject = stream;
+      state.stream = stream;
+      await video.play();
+      updateQualityState(video.videoWidth, video.videoHeight);
+      cameraStateEl.textContent = '使用中';
+      await refreshCameraList({ requestPermission:false });
+      return true;
+    } catch (e) {
+      setFail('カメラ開始失敗: ' + (e?.message || String(e)));
+      setStatus('カメラ失敗', 'danger');
+      cameraStateEl.textContent = '失敗';
+      return false;
+    }
+  }
+
+  function stopAll() {
+    state.running = false;
+    if (state.inferTimer) clearTimeout(state.inferTimer);
+    state.inferTimer = null;
+    if (state.stream) {
+      state.stream.getTracks().forEach(t => t.stop());
+      state.stream = null;
+    }
+    video.srcObject = null;
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    state.lastLeadBox = null;
+    state.lastLeadTs = 0;
+    state.stationaryFrames = 0;
+    state.leadMiss = 0;
+    releaseWakeLock();
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    setStatus('停止中', 'warn');
+  }
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault(); deferredPrompt = e; installBtn.style.display = '';
+  });
+  window.addEventListener('appinstalled', () => {
+    deferredPrompt = null; installBtn.style.display = 'none'; updatePwaState();
+  });
+  installBtn.addEventListener('click', async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice.catch(() => null);
+    deferredPrompt = null;
+    installBtn.style.display = 'none';
+  });
+
+  [modelPathInput, cameraSelect, qualitySelect, confRange, iouRange, inferRange, nearRange, moveRange, roiCheck].forEach(el => {
+    el.addEventListener('change', saveSettings);
+    el.addEventListener('input', saveSettings);
+  });
+  cameraSelect.addEventListener('change', () => { state.selectedCameraValue = cameraSelect.value; });
+  qualitySelect.addEventListener('change', async () => {
+    updateQualityState();
+    saveSettings();
+    if (state.stream) await startCamera();
+  });
+  refreshCamerasBtn.addEventListener('click', async () => { await refreshCameraList({ requestPermission:true }); saveSettings(); });
+  prefetchBtn.addEventListener('click', prefetchAssets);
+  fullscreenBtn.addEventListener('click', toggleFullscreen);
+  resetSettingsBtn.addEventListener('click', resetSettings);
+  window.addEventListener('online', updateOnlineState);
+  window.addEventListener('offline', updateOnlineState);
+
+  startBtn.addEventListener('click', async () => {
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    setStatus('初期化中', 'warn');
+    setFail('');
+    ensureAudio(); // ユーザー操作内で音声を有効化(iOSで推論中の警告音を確実に鳴らす)
+    const camOk = await startCamera();
+    if (!camOk) { startBtn.disabled = false; stopBtn.disabled = true; return; }
+    const modelOk = await loadModel();
+    if (!modelOk) {
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      if (state.stream) { state.stream.getTracks().forEach(t => t.stop()); state.stream = null; video.srcObject = null; }
+      return;
+    }
+    state.lastLeadBox = null;
+    state.lastLeadTs = 0;
+    state.stationaryFrames = 0;
+    state.leadMiss = 0;
+    await requestWakeLock(); // 走行中に画面が消灯しないようにする
+    state.running = true;
+    setStatus('監視中', 'ok');
+    runInferenceLoop();
+  });
+  stopBtn.addEventListener('click', stopAll);
+  warnTestBtn.addEventListener('click', warnBeep);
+  moveTestBtn.addEventListener('click', moveBeep);
+  window.addEventListener('beforeunload', () => { saveSettings(); stopAll(); });
+
+  loadSettings();
+  cameraSelect.value = state.selectedCameraValue || 'auto-environment';
+  updateQualityState();
+  updateOnlineState();
+  updatePwaState();
+  registerServiceWorker();
+  refreshCameraList({ requestPermission:false });
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', () => refreshCameraList({ requestPermission:false }));
+  }
+})();
+</script>
+</body>
+</html>
